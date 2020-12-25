@@ -57,6 +57,11 @@ def est_sr(N,X,s,rg):
     return sr, X
 
 def sr_sample(n,r,rg, m=1000, N=2000):
+    """
+    Find sr for a given r
+    input: n: dimension, r: given r, m: # initial samples for estimating s1,
+    N:sample length of the generated MC path
+    """
     s1 ,X = est_s1(n,m,rg)
     for i in range(r):
         sr, Xr = est_sr(N,X,s1,rg)
@@ -66,7 +71,8 @@ def sr_sample(n,r,rg, m=1000, N=2000):
 
 def MC_Spath(N,X,s,rg):
     """
-
+    Generate MC sample path for variable S
+    N: sample lenght, X: an inital sample, s:condition on S>s
     """
     X0 = X
     path = np.zeros((len(X0), N))
@@ -79,7 +85,7 @@ def MC_Spath(N,X,s,rg):
 def autocov_est(v_arr,t):
     """
     Estimate the auto-covariance
-    input
+    input: v_arr value function here it is the sample path
     """
     N = len(v_arr)
     if t>N-1:
