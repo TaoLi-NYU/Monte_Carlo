@@ -1,0 +1,284 @@
+"""
+Code for Assignment 9, MonteCarlo methods, Nov 27, 2020
+by Tao Li, taoli@nyu.edu
+
+"""
+import matplotlib.pyplot as plt
+import numpy as np
+from numpy.random import Generator, PCG64  # numpy randon number generator
+from scipy.stats import multivariate_normal
+
+
+def rho(x, p1, u1, u2, cov):
+    """
+    The pdf of target distribution
+    input： p1: cofficient, u1,u2: mean, cov: covariance
+    output: evaluation at x
+    """
+    rhox = p1 * multivariate_normal.pdf(x, mean=u1, cov=cov) + (1 - p1) * multivariate_normal.pdf(x, mean=u2, cov=cov)
+    return rhox
+
+
+def nabla_phi(y, beta, p1, s, u1, u2, cov):
+    """
+    The gradient of the energy function
+    input: beta: temperature parameter, s: scaling factor in the covariance
+    """
+    pre_factor1 = p1 * s * s * multivariate_normal.pdf(y, mean=u1, cov=cov)
+    pre_factor2 = (1 - p1) * s * s * multivariate_normal.pdf(y, mean=u2, cov=cov)
+    nabla_phi = 1 / (beta * rho(y, p1, u1, u2, cov)) * (pre_factor1 * (y - u1) + pre_factor2 * (y - u2))
+    return nabla_phi
+
+
+def Langevin_prop(y, dt, beta, p1, s, rg, u1, u2, cov):
+    """
+    The proposal in Langevin move shown in 3(a)
+    input: dt: time step
+    output: a proposal and the associated probability P(x|y)
+    """
+    # mean for the Langevin move
+    Lan_mean = y - dt * nabla_phi(y, beta, p1, s, u1, u2, cov)
+    # covariance for Langevin move
+    Lan_cov = 2 * beta * dt * np.eye(len(y))
+    x = rg.multivariate_normal(Lan_mean, Lan_cov)
+    PXY = multivariate_normal.pdf(x, mean=Lan_mean, cov=Lan_cov)
+    return x, PXY
+
+
+def rsample(y, dt, beta, p1, s, rg, u1, u2, cov):
+    """
+    resampling
+    input: y: current sample, r: proposal size
+    """
+    # have a proposal
+    x, PXY = Langevin_prop(y, dt, beta, p1, s, rg, u1, u2, cov)
+    # evaluate the pdf of target
+    rhoX = rho(x, p1, u1, u2, cov)
+    rhoY = rho(y, p1, u1, u2, cov)
+
+    # metropolis
+    _, PYX = Langevin_prop(x, dt, beta, p1, s, rg, u1, u2, cov)
+    MH = (rhoX * PYX) / (rhoY * PXY)
+    if MH > 1:
+        return x
+    U = rg.random()
+    if U < MH:
+        return x
+    return y
+
+
+def Langevin_MC(x0, N, dt, beta, p1, s, rg, u1, u2, cov):
+    """
+    Using Langevin dynamics in MCMC
+    input: N: sample length
+    output: sample path
+    """
+    # allocation
+    path = np.empty((N, len(x0)))
+    path[0, :] = x0
+    # counter: the number of valid samplers
+    counter = 0
+    while counter < N - 1:
+        # MH sampler for one move
+        x1 = rsample(x0, dt, beta, p1, s, rg, u1, u2, cov)
+        counter += 1
+        path[counter, :] = x1
+        x0 = x1
+    return path
+
+
+def verlet(x, p, dt, K, beta, p1, s, u1, u2, cov):
+    """
+    Verlet method in hamiltonian
+    input: K: num of steps in verlet
+    """
+    # make a half step for momentum at the beginning
+    p = p - 0.5 * dt * nabla_phi(x, beta, p1, s, u1, u2, cov)
+    # verlet method
+    for i in range(K):
+        x = x + dt * p
+        if i != (K - 1):
+            p = p - dt * nabla_phi(x, beta, p1, s, u1, u2, cov)
+    # make a half step for momentum at the end
+    p = p - 0.5 * dt * nabla_phi(x, beta, p1, s, u1, u2, cov)
+    return x, p
+
+
+def momentum_resample(p, a, beta, rg):
+    """
+    Momentum resampling
+    """
+    # mean
+    mean = a * p
+    # cov
+    cov = (1 - a * a) / beta * np.eye(len(p))
+    #
+    p_new = rg.multivariate_normal(mean=mean, cov=cov)
+    return p_new
+
+
+def HMC(x0, N, dt, a, K, beta, p1, s, rg, u1, u2, cov):
+    """
+    Hamiltonian sampling
+    input: parameters are the same as before
+    ouput: sample path
+    """
+    # allocation
+    path = np.empty((N, len(x0)))
+    path[0, :] = x0
+    # counter: the number of valid samplers
+    counter = 0
+    p0 = np.zeros(len(x0))
+    while counter < N - 1:
+        p0 = momentum_resample(p0, a, beta, rg)
+        x, p = verlet(x0, p0, dt, K, beta, p1, s, u1, u2, cov)
+        # metropolis
+        old_potential = rho(x0, p1, u1, u2, cov)
+        new_potential = rho(x, p1, u1, u2, cov)
+        old_kinetic = np.exp(-beta / 2 * sum(np.power(p0, 2)))
+        new_kinetic = np.exp(-beta / 2 * sum(np.power(p, 2)))
+        MH = new_potential * new_kinetic / (old_potential * old_kinetic)
+        U = rg.random()
+        if U < MH:
+            x0 = x
+            p0 = p
+        else:
+            p0 = -p
+        counter += 1
+        path[counter, :] = x0
+    return path
+
+def autocov_est(v_arr,t):
+    """
+    Estimate the auto-covariance
+    input
+    """
+    length = len(v_arr)
+    if t>length-1:
+        print('invalid t')
+        return
+    v_bar = v_arr.mean()
+    v_diff0 = v_arr[0:N-1-t]-v_bar
+    v_difft = v_arr[t:N-1]- v_bar
+    est = np.multiply(v_diff0,v_difft).mean()
+    return est
+
+def auto_corr(v_arr, T):
+    """
+    Estimate the auto-correlation
+    input: v_arr: sample path, T: maximum time
+    return: auto-correlation estimation
+    """
+    autocorr_est = np.zeros(T)
+    for t in range(T):
+        autocorr_est[t] = autocov_est(v_arr, t)
+    autocorr_est = autocorr_est / autocorr_est[0]
+    return autocorr_est
+
+def auto_time(autocorr, w):
+    """
+    Estimate the auto-correlation time by self-consistency
+    input: autocorr: auto-correlation estimation, w: window size
+    reeturn: estiamte of tau
+    """
+    T = len(autocorr)
+    tau = 1
+    t = 0
+    while True:
+        if t > w * tau:
+            break
+        t = t + 1
+        if t == T:
+            print("the run was too short")
+            return
+        tau = tau + 2 * autocorr[t]
+
+    return tau
+
+# parameters
+def parameters_generate(d, r, s):
+    # means of the two gaussians
+    u1 = np.zeros(d)
+    u2 = np.zeros(d)
+    u2[0] = r
+    # covariance of the gaussian
+    cov = 1 / np.power(s, 2) * np.eye(d)
+    return u1, u2, cov
+
+def para_experiment(x0,r,s,rg,p1=0.5, a=0.5,beta=1,dt=0.1,K=30 ,d=1, T=5000, N=20000, plot=True):
+    """
+    numerical experiment for different combinations of parameters
+    """
+    # get parameters
+    u1, u2, cov = parameters_generate(d, r, s)
+    # get the sample path
+    path_lan = Langevin_MC(x0, N, dt, beta, p1, s, rg, u1, u2, cov)
+    path_hmc = HMC(x0, N, dt, a, K, beta, p1, s, rg, u1, u2, cov)
+    # estimate the auto-correlation function
+    autocorr_lan = auto_corr(path_lan, T)
+    autocorr_hmc = auto_corr(path_hmc, T)
+    # estimate the auto-correlation time
+    tau_lan = auto_time(autocorr_lan, 5)
+    tau_hmc = auto_time(autocorr_hmc, 5)
+    if plot == True:
+        plt.plot(np.linspace(0, T, T), autocorr_lan, label='Langevin')
+        plt.plot(np.linspace(0, T, T), autocorr_hmc, alpha=0.5, label='HMC')
+        plt.xlabel("time t")
+        plt.ylabel("auto correlation")
+        plt.legend(loc='upper right')
+        title_text = "auto correlation function under r={r:d} , s={s:.1f} "
+        plt.title(title_text.format(r=r,s=s))
+        plt.show()
+    #
+        plt.hist(path_lan, bins='auto', alpha=0.5, label='Langevin',density=True)
+        plt.hist(path_hmc, bins='auto', alpha=0.5, label='HMC', density=True)
+        title_text = "Histogram under  r={r:d} , s={s:.1f}"
+        plt.title(title_text.format(r=r,s=s))
+        plt.legend(loc='upper right')
+        plt.show()
+    return path_lan,path_hmc, tau_lan, tau_hmc
+### main program
+seed = 12344  # change this to get different answers
+bg = PCG64(seed)  # instantiate a bit generator
+rg = Generator(bg)  # instantiate a random number generator with this bit generator
+N = 10000
+a = 0.5
+beta = 1
+dt = 0.1
+K = 30
+
+# dim 1 verify the samplers are correct
+"""
+d = 1
+p1 = 0
+r = 1
+s = 1
+u1, u2, cov = parameters_generate(d, r, s)
+
+x0 = np.zeros(d)
+
+path1 = Langevin_MC(x0, N, dt, beta, p1, s, rg, u1, u2, cov)
+path2 = HMC(x0, N, dt, a, K, beta, p1, s, rg, u1, u2, cov)
+plt.hist(path1, bins='auto', alpha=0.5, label='Langevin', density=True)
+plt.hist(path2, bins='auto', alpha=0.5, label='Hamiltonian', density=True)
+plt.legend(loc='upper right')
+plt.show()
+
+
+# dim 2
+d=2
+
+u1, u2, cov = parameters_generate(d, r, s)
+
+x0 = np.zeros(d)
+
+path2_1 = Langevin_MC(x0, N, dt, beta, p1, s, rg, u1, u2, cov)
+path2_2 = HMC(x0, N, dt, a, K, beta, p1, s, rg, u1, u2, cov)
+"""
+# numerical experiments
+# r=3 s=1
+#path_lan_r3s1,path_hmc_r3s1, tau_lan_r3s1, tau_hmc_r3s1= para_experiment(x0=np.zeros(1),r=3,s=1,rg=rg)
+# r=6 s=0.5
+path_lan_r6s2,path_hmc_r6s2, tau_lan_r6s2, tau_hmc_r6s2= para_experiment(x0=np.zeros(1), r=6,s=0.5,rg=rg)
+
+
